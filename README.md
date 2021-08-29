@@ -20,11 +20,20 @@ Original README converted to markdown follows:
 
 ## image-backup:
 
-`image-backup` creates a backup of a running Raspbian system to a standard 'raw' image file that can be written to an SD card or a USB device card with Etcher, imageUSB, etc. It will also perform incremental updates to an existing backup image file.
+`image-backup` creates a backup of a running Raspbian system to a standard 'raw' image file that can be written to an SD card or a USB device with Etcher, imageUSB, etc. It will also perform incremental updates to an existing backup image file.
 
-Running image-backup with no parameters will create a full backup. To create the smallest possible image, specify an Image ROOT filesystem size of 0 to determine the minimum allowed size. If you plan to incrementally update the image file, specify a considerably larger size to allow for additional growth.
+Running `image-backup` with no incremental backup file parameter will create an initial/full backup. If no -i/--initial option is included, `image-backup` will interactively prompt for an "Initial image file ROOT filesystem size (MB)", which can be any size as long as (1) it's large enough to hold the data contained on the device being backed up and (2) that amount of space is available on the destination device. `image-backup` will also prompt for an "Added space for incremental updates after shrinking (MB)" which will be added to the image file size after the full backup completes and the image file has been shrunk to the smallest size possible. The resulting image file will auto-expand the first time it's executed unless the -n/--noexpand option is included.
 
-Running image-backup with a parameter of an existing image filename will incrementally update that image file.
+Running `image-backup` with a parameter of an existing image filename will incrementally update that image file. The -i/--initial option is ignored on incremental backups.
+
+The -o/--options option permits including additional rsync options (comma separated).
+
+### Examples:
+```
+image-backup
+image-backup /media/backup.img
+image-backup --initial /media/backup.img,,5000 --noexpand --options --exclude-from=/home/pi/exclude.txt,--delete-excluded
+```
 
 
 ## image-check:
