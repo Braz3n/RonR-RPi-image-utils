@@ -2,7 +2,7 @@
 
 trap '{ stty sane; echo ""; errexit "Aborted"; }' SIGINT SIGTERM
 
-MNTPATH="/tmp/img-compare-mnt"
+MNTPATH="/tmp/image-chroot-mnt"
 
 errexit()
 {
@@ -48,6 +48,7 @@ mntimg()
     errexit "Unable to mount image ROOT partition"
   fi
   MNTED=TRUE
+  BOOTMNT="${MNTPATH}$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' "${MNTPATH}/etc/fstab")"
   if [ ! -d "${BOOTMNT}/" ]; then
     mkdir -p "${BOOTMNT}/"
     if [ $? -ne 0 ]; then
@@ -79,14 +80,13 @@ usage()
 {
   errexit "Usage: $0 [options] pathto/imagefile\n\
 -h,--help       This usage description\n\
--o,--options    Additional rsync options (comma separated)\n\
 -u,--ubuntu     Ubuntu (Deprecated)"
 }
 
 LOOP=""
 MNTED=FALSE
 if [ $(id -u) -ne 0 ]; then
-  errexit "$0 must be run as root user"
+  errexit "Must be run as root user: sudo $0"
 fi
 PGMNAME="$(basename $0)"
 for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
@@ -94,13 +94,15 @@ for PID in $(pidof -x -o %PPID "${PGMNAME}"); do
     errexit "${PGMNAME} is already running"
   fi
 done
-rsync --version &> /dev/null
-if [ $? -ne 0 ]; then
-  errexit "rsync not installed (run: apt-get install rsync)"
+file --version &> /dev/null
+if [ $? -eq 127 ]; then
+  echo ""
+  echo "Installing file"
+  echo ""
+  apt-get update
+  apt-get install file
 fi
-BOOTMNT="${MNTPATH}$(sed -n 's|^\S\+\s\+\(/boot\S*\)\s\+.*$|\1|p' /etc/fstab)"
 IMGFILE=""
-OPTIONS=()
 while [ $# -gt 0 ]; do
   case "$1" in
 
@@ -108,16 +110,8 @@ while [ $# -gt 0 ]; do
       usage
       ;;
 
-    -o|--options)
-      OIFS=${IFS}
-      IFS=','
-      OPTIONS+=($2)
-      IFS=${OIFS}
-      shift 2
-      ;;
-
     -u|--ubuntu)
-     shift
+      shift
       ;;
 
     -*|--*)
@@ -131,42 +125,54 @@ while [ $# -gt 0 ]; do
 
   esac
 done
-FLAG=0
-while :
-do
-  if [[ ${FLAG} -eq 1 || "${IMGFILE}" = "" ]]; then
-    while :
-    do
-      echo ""
-      read -r -e -i "${IMGFILE}" -p "Image file to compare? " IMGFILE
-      if [ "${IMGFILE}" = "" ]; then
-        continue
-      elif [ -d "${IMGFILE}" ]; then
-        echo ""
-        echo "${IMGFILE} is a directory"
-        continue
-      else
-        break
-      fi
-    done
-  fi
-  if [ -f "${IMGFILE}" ]; then
-    break
-  else
-    echo ""
-    echo "${IMGFILE} not found"
-    FLAG=1
-  fi
-done
+if [ "${IMGFILE}" = "" ]; then
+  errexit "No image file specified"
+fi
+if [ ! -f "${IMGFILE}" ]; then
+  errexit "${IMGFILE} not found"
+fi
 mntimg
-sync
-echo ""
-rsync -aDH --dry-run --itemize-changes --partial --numeric-ids --delete --force --exclude "${MNTPATH}" --exclude '/dev' --exclude '/lost+found' --exclude '/media' --exclude '/mnt' \
---exclude '/proc' --exclude '/run' --exclude '/sys' --exclude '/tmp' --exclude '/var/swap' --exclude '/etc/udev/rules.d/70-persistent-net.rules' \
---exclude '/var/lib/asterisk/astdb.sqlite3-journal' "${OPTIONS[@]}" / "${MNTPATH}/"
-if [ $? -ne 0 ]; then
-  errexit "Unable to compare backup"
+SYS="$(file -b /bin/bash | sed -n 's|^.*, \(ARM\s*\S*\),.*$|\1|p')"
+IMG="$(file -b ${MNTPATH}/bin/bash | sed -n 's|^.*, \(ARM\s*\S*\),.*$|\1|p')"
+umntimg
+if [ "${SYS}" != "${IMG}" ]; then
+  errexit "${IMGFILE} architecture differs from system architecture"
 fi
 echo ""
-sync
+echo -n "chroot to ${IMGFILE} (y/n)? "
+while read -r -n 1 -s answer; do
+  if [[ ${answer} = [yYnN] ]]; then
+    echo "${answer}"
+    if [[ ${answer} = [yY] ]]; then
+      break
+    else
+      errexit "Aborted"
+    fi
+  fi
+done
+echo ""
+echo "Attempting to chroot to ${IMGFILE}"
+echo "Host root filesystem is available at /host-root-fs"
+echo "Use exit or ^D to terminate chroot"
+echo ""
+mntimg
+mkdir "${MNTPATH}/host-root-fs"
+mount --bind / "${MNTPATH}/host-root-fs"
+mount --bind /dev "${MNTPATH}/dev"
+mount --bind /sys "${MNTPATH}/sys"
+mount --bind /proc "${MNTPATH}/proc"
+mount --bind /dev/pts "${MNTPATH}/dev/pts"
+chroot "${MNTPATH}"
+umount "${MNTPATH}/dev/pts" "${MNTPATH}/proc" "${MNTPATH}/sys" "${MNTPATH}/dev"
+while read MNTPT
+do
+  if [[ "${MNTPT}" != "${BOOTMNT}" && "${MNTPT}" != "${MNTPATH}/host-root-fs" ]]; then
+    umount "${MNTPT}"
+  fi
+done <<< "$(findmnt -lR ${MNTPATH} | sed -n "s|^\(${MNTPATH}/\S\+\)\s\+.*$|\1|p")"
+umount "${MNTPATH}/host-root-fs"
+rmdir "${MNTPATH}/host-root-fs"
 umntimg
+echo ""
+echo "Exited chroot to ${IMGFILE}"
+echo ""
